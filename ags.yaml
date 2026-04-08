@@ -1,0 +1,34 @@
+version: 1
+project:
+  name: ags2
+  root: .
+orchestrator:
+  tool: claude-code
+  model: claude-opus-4-5
+  instances: 1
+roles:
+  architect:
+    tool: claude-code
+    model: claude-opus-4-5
+    instances: 1
+  coder:
+    tool: claude-code
+    model: claude-sonnet-4-5
+    instances: 1
+    worktrees: false
+  reviewer:
+    tool: codex
+    model: gpt-4.1
+    instances: 1
+  tester:
+    tool: claude-code
+    model: claude-sonnet-4-5
+    instances: 1
+  debugger:
+    tool: claude-code
+    model: claude-opus-4-5
+    instances: 1
+workflow:
+  autoReview: true
+  autoTest: true
+  maxRevisionLoops: 1

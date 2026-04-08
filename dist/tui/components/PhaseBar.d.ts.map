@@ -1,0 +1,1 @@
+{"version":3,"file":"PhaseBar.d.ts","sourceRoot":"","sources":["../../../src/tui/components/PhaseBar.tsx"],"names":[],"mappings":"AAAA,OAAO,KAAK,MAAM,OAAO,CAAC;AAE1B,OAAO,KAAK,EAAE,UAAU,EAAE,MAAM,gBAAgB,CAAC;AAiBjD,UAAU,KAAK;IACb,KAAK,EAAE,UAAU,CAAC,OAAO,CAAC,CAAC;CAC5B;AAED,wBAAgB,QAAQ,CAAC,EAAE,KAAK,EAAE,EAAE,KAAK,GAAG,KAAK,CAAC,YAAY,CA8B7D"}
