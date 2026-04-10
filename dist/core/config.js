@@ -5,12 +5,12 @@ export const CONFIG_FILE = 'ags.yaml';
 export const AGS_DIR = '.ags';
 // ─── Default configs per role ─────────────────────────────────────────────────
 const ROLE_DEFAULTS = {
-    orchestrator: { tool: 'claude-code', model: 'claude-opus-4-5', instances: 1 },
-    architect: { tool: 'claude-code', model: 'claude-opus-4-5', instances: 1 },
-    coder: { tool: 'claude-code', model: 'claude-sonnet-4-5', instances: 1, worktrees: false },
-    reviewer: { tool: 'codex', model: 'gpt-4.1', instances: 1 },
-    tester: { tool: 'claude-code', model: 'claude-sonnet-4-5', instances: 1 },
-    debugger: { tool: 'claude-code', model: 'claude-opus-4-5', instances: 1 },
+    orchestrator: { tool: 'claude-code', instances: 1 },
+    architect: { tool: 'claude-code', instances: 1 },
+    coder: { tool: 'claude-code', instances: 1, worktrees: false },
+    reviewer: { tool: 'codex', instances: 1 },
+    tester: { tool: 'claude-code', instances: 1 },
+    debugger: { tool: 'claude-code', instances: 1 },
 };
 // ─── Tool model presets ───────────────────────────────────────────────────────
 export const TOOL_MODELS = {

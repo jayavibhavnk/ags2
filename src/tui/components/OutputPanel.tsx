@@ -67,7 +67,7 @@ export function OutputPanel({ agent, maxLines = 30 }: Props): React.ReactElement
         </Text>
         <Text color={theme.dim}>·</Text>
         <Text color={theme.dim}>{agent.tool}</Text>
-        {agent.model && (
+        {agent.model && agent.model.trim() && (
           <>
             <Text color={theme.dim}>·</Text>
             <Text color={theme.dim}>{agent.model}</Text>

@@ -1,8 +1,7 @@
-import { execa } from 'execa';
+import { spawn } from 'child_process';
 import type { ClaudeStreamEvent, ClaudeStreamAssistant, ClaudeStreamResult } from '../types.js';
 import { BaseAgent, type RunOptions, type RunResult } from './base.js';
 
-// Allowed tools for Claude Code headless runs
 const DEFAULT_ALLOWED_TOOLS = [
   'Read',
   'Write',
@@ -30,44 +29,42 @@ export class ClaudeCodeAgent extends BaseAgent {
     const args: string[] = [
       '-p', prompt,
       '--output-format', 'stream-json',
+      '--verbose',
       '--allowedTools', allowedTools.join(','),
       '--max-turns', String(maxTurns),
     ];
 
-    if (systemPrompt) {
-      args.push('--system-prompt', systemPrompt);
-    }
+    if (systemPrompt) args.push('--system-prompt', systemPrompt);
+    // Do NOT pass --model — let claude use its own configured default
 
-    if (this.model) {
-      args.push('--model', this.model);
-    }
-
-    let accumulatedOutput = '';
-    let costUsd = 0;
-    let success = false;
-    let errorMsg: string | undefined;
-
-    const emit = (line: Parameters<typeof this.makeLine>[0], type: Parameters<typeof this.makeLine>[1] = 'text', toolName?: string) => {
-      const l = this.makeLine(line, type, toolName);
-      this.emitOutput(l);
-      onOutput?.(l);
+    const emit = (
+      content: string,
+      type: 'text' | 'tool_use' | 'tool_result' | 'error' | 'info' = 'text',
+      toolName?: string
+    ) => {
+      const line = this.makeLine(content, type, toolName);
+      this.emitOutput(line);
+      onOutput?.(line);
     };
 
-    try {
-      const proc = execa('claude', args, {
-        cwd,
-        env: { ...process.env },
-        stdin: 'ignore',
-        stdout: 'pipe',
-        stderr: 'pipe',
-        reject: false,
-        buffer: false,
-      });
-
+    return new Promise<RunResult>((resolve) => {
+      let accumulatedOutput = '';
+      let costUsd = 0;
+      let finalSuccess = false;
+      let finalError: string | undefined;
       let lineBuffer = '';
 
-      proc.stdout?.on('data', (chunk: Buffer) => {
-        lineBuffer += chunk.toString();
+      const proc = spawn('claude', args, {
+        cwd,
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      proc.stdout.setEncoding('utf8');
+      proc.stderr.setEncoding('utf8');
+
+      proc.stdout.on('data', (chunk: string) => {
+        lineBuffer += chunk;
         const lines = lineBuffer.split('\n');
         lineBuffer = lines.pop() ?? '';
 
@@ -79,7 +76,6 @@ export class ClaudeCodeAgent extends BaseAgent {
           try {
             event = JSON.parse(trimmed) as ClaudeStreamEvent;
           } catch {
-            // Non-JSON output — show as plain text
             emit(trimmed, 'text');
             accumulatedOutput += trimmed + '\n';
             continue;
@@ -91,53 +87,54 @@ export class ClaudeCodeAgent extends BaseAgent {
 
           if (event.type === 'result') {
             const r = event as ClaudeStreamResult;
-            if (r.subtype === 'success') {
-              success = true;
-              if (r.result) accumulatedOutput = r.result;
-            } else {
-              errorMsg = r.error ?? `Claude exited with subtype: ${r.subtype}`;
-            }
+            finalSuccess = r.subtype === 'success';
+            if (r.result) accumulatedOutput = r.result;
             costUsd = r.cost_usd ?? 0;
+            if (!finalSuccess) {
+              finalError = r.error ?? `Claude exited: ${r.subtype}`;
+              emit(finalError, 'error');
+            }
           }
         }
       });
 
-      proc.stderr?.on('data', (chunk: Buffer) => {
-        const text = chunk.toString().trim();
+      proc.stderr.on('data', (chunk: string) => {
+        const text = chunk.trim();
         if (text) emit(text, 'error');
       });
 
-      await proc;
+      proc.on('error', (err) => {
+        emit(`Failed to start claude: ${err.message}`, 'error');
+        resolve({ success: false, output: '', costUsd: 0, error: err.message });
+      });
 
-      // Flush remaining buffer
-      if (lineBuffer.trim()) {
-        try {
-          const event = JSON.parse(lineBuffer.trim()) as ClaudeStreamEvent;
-          this.handleEvent(event, emit, (text) => {
-            accumulatedOutput += text + '\n';
-          });
-          if (event.type === 'result') {
-            const r = event as ClaudeStreamResult;
-            success = r.subtype === 'success';
-            if (r.result) accumulatedOutput = r.result;
-            costUsd = r.cost_usd ?? 0;
-          }
-        } catch {
-          /* ignore */
+      proc.on('close', (code) => {
+        // Flush any remaining buffer
+        if (lineBuffer.trim()) {
+          try {
+            const event = JSON.parse(lineBuffer.trim()) as ClaudeStreamEvent;
+            this.handleEvent(event, emit, (text) => { accumulatedOutput += text + '\n'; });
+            if (event.type === 'result') {
+              const r = event as ClaudeStreamResult;
+              finalSuccess = r.subtype === 'success';
+              if (r.result) accumulatedOutput = r.result;
+              costUsd = r.cost_usd ?? 0;
+            }
+          } catch { /* ignore */ }
         }
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      emit(`Error running Claude Code: ${msg}`, 'error');
-      return { success: false, output: '', costUsd: 0, error: msg };
-    }
 
-    return {
-      success,
-      output: accumulatedOutput.trim(),
-      costUsd,
-      error: errorMsg,
-    };
+        if (code !== 0 && !finalSuccess && !finalError) {
+          finalError = `claude exited with code ${code}`;
+        }
+
+        resolve({
+          success: finalSuccess,
+          output: accumulatedOutput.trim(),
+          costUsd,
+          error: finalError,
+        });
+      });
+    });
   }
 
   private handleEvent(
@@ -152,8 +149,7 @@ export class ClaudeCodeAgent extends BaseAgent {
           emit(block.text.trim(), 'text');
           onText(block.text.trim());
         } else if (block.type === 'tool_use') {
-          const summary = this.summarizeTool(block.name, block.input);
-          emit(summary, 'tool_use', block.name);
+          emit(this.summarizeTool(block.name, block.input), 'tool_use', block.name);
         }
       }
     } else if (event.type === 'tool_result') {
@@ -165,31 +161,21 @@ export class ClaudeCodeAgent extends BaseAgent {
       }
     } else if (event.type === 'system') {
       const ev = event as { type: string; subtype?: string; model?: string };
-      if (ev.subtype === 'init') {
-        emit(`Model: ${ev.model ?? 'claude'}`, 'info');
-      }
+      if (ev.subtype === 'init') emit(`Model: ${ev.model ?? 'claude'}`, 'info');
     }
   }
 
   private summarizeTool(name: string, input: Record<string, unknown>): string {
     switch (name) {
-      case 'Read':
-        return `Read ${input['file_path'] ?? input['path'] ?? '?'}`;
-      case 'Write':
-        return `Write ${input['file_path'] ?? input['path'] ?? '?'}`;
+      case 'Read':     return `Read ${input['file_path'] ?? input['path'] ?? '?'}`;
+      case 'Write':    return `Write ${input['file_path'] ?? input['path'] ?? '?'}`;
       case 'Edit':
-      case 'MultiEdit':
-        return `Edit ${input['file_path'] ?? input['path'] ?? '?'}`;
-      case 'Bash':
-        return `$ ${String(input['command'] ?? '').slice(0, 80)}`;
-      case 'Glob':
-        return `Glob ${input['pattern'] ?? '**'}`;
-      case 'Grep':
-        return `Grep "${input['pattern'] ?? ''}" in ${input['path'] ?? '.'}`;
-      case 'LS':
-        return `ls ${input['path'] ?? '.'}`;
-      default:
-        return `${name}(${JSON.stringify(input).slice(0, 60)})`;
+      case 'MultiEdit':return `Edit ${input['file_path'] ?? input['path'] ?? '?'}`;
+      case 'Bash':     return `$ ${String(input['command'] ?? '').slice(0, 80)}`;
+      case 'Glob':     return `Glob ${input['pattern'] ?? '**'}`;
+      case 'Grep':     return `Grep "${input['pattern'] ?? ''}" in ${input['path'] ?? '.'}`;
+      case 'LS':       return `ls ${input['path'] ?? '.'}`;
+      default:         return `${name}(${JSON.stringify(input).slice(0, 60)})`;
     }
   }
 }

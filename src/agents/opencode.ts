@@ -1,61 +1,54 @@
-import { execa } from 'execa';
+import { spawn } from 'child_process';
 import { BaseAgent, type RunOptions, type RunResult } from './base.js';
 
 export class OpenCodeAgent extends BaseAgent {
   readonly toolType = 'opencode';
 
   async run(opts: RunOptions): Promise<RunResult> {
-    const {
-      prompt,
-      cwd = process.cwd(),
-      onOutput,
-    } = opts;
+    const { prompt, cwd = process.cwd(), onOutput } = opts;
 
-    const emit = (content: string, type: Parameters<typeof this.makeLine>[1] = 'text') => {
+    const emit = (content: string, type: 'text' | 'tool_use' | 'tool_result' | 'error' | 'info' = 'text') => {
       const line = this.makeLine(content, type);
       this.emitOutput(line);
       onOutput?.(line);
     };
 
-    let accumulatedOutput = '';
+    return new Promise<RunResult>((resolve) => {
+      let accumulatedOutput = '';
 
-    try {
-      const proc = execa('opencode', ['run', prompt], {
+      const proc = spawn('opencode', ['run', prompt], {
         cwd,
         env: { ...process.env },
-        stdin: 'ignore',
-        stdout: 'pipe',
-        stderr: 'pipe',
-        reject: false,
-        buffer: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
 
-      proc.stdout?.on('data', (chunk: Buffer) => {
-        const text = chunk.toString();
-        accumulatedOutput += text;
-        const lines = text.split('\n').filter((l) => l.trim());
-        for (const line of lines) {
-          emit(line, 'text');
-        }
+      proc.stdout.setEncoding('utf8');
+      proc.stderr.setEncoding('utf8');
+
+      proc.stdout.on('data', (chunk: string) => {
+        accumulatedOutput += chunk;
+        const lines = chunk.split('\n').filter((l) => l.trim());
+        for (const line of lines) emit(line, 'text');
       });
 
-      proc.stderr?.on('data', (chunk: Buffer) => {
-        const text = chunk.toString().trim();
+      proc.stderr.on('data', (chunk: string) => {
+        const text = chunk.trim();
         if (text) emit(text, 'error');
       });
 
-      const result = await proc;
+      proc.on('error', (err) => {
+        emit(`Failed to start opencode: ${err.message}`, 'error');
+        resolve({ success: false, output: '', costUsd: 0, error: err.message });
+      });
 
-      return {
-        success: result.exitCode === 0,
-        output: accumulatedOutput.trim(),
-        costUsd: 0,
-        error: result.exitCode !== 0 ? `OpenCode exited with code ${result.exitCode}` : undefined,
-      };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      emit(`Error running OpenCode: ${msg}`, 'error');
-      return { success: false, output: '', costUsd: 0, error: msg };
-    }
+      proc.on('close', (code) => {
+        resolve({
+          success: code === 0,
+          output: accumulatedOutput.trim(),
+          costUsd: 0,
+          error: code !== 0 ? `opencode exited with code ${code}` : undefined,
+        });
+      });
+    });
   }
 }
